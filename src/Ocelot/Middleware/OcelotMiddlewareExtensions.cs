@@ -70,15 +70,28 @@
         private static async Task<IInternalConfiguration> CreateConfiguration(IApplicationBuilder builder)
         {
             var fileConfigurationRepository = builder.ApplicationServices.GetService<IFileConfigurationRepository>();
-            var fileConfiguration = await fileConfigurationRepository.Get();
-            if (fileConfiguration.IsError)
+            var fileConfig = builder.ApplicationServices.GetService<IOptionsMonitor<FileConfiguration>>();
+            FileConfiguration fileConfiguration;
+
+            // if configuration from file system
+            if (fileConfigurationRepository.GetType() == typeof(DiskFileConfigurationRepository))
             {
-                ThrowToStopOcelotStarting(fileConfiguration);
+                fileConfiguration = fileConfig.CurrentValue;
+            }
+            else
+            {
+                var fileConfigurationResponse = await fileConfigurationRepository.Get();
+
+                if (fileConfigurationResponse.IsError)
+                {
+                    ThrowToStopOcelotStarting(fileConfigurationResponse);
+                }
+                fileConfiguration = fileConfigurationResponse.Data;
             }
 
             // now create the config
             var internalConfigCreator = builder.ApplicationServices.GetService<IInternalConfigurationCreator>();
-            var internalConfig = await internalConfigCreator.Create(fileConfiguration.Data);
+            var internalConfig = await internalConfigCreator.Create(fileConfiguration);
 
             // Configuration error, throw error message
             if (internalConfig.IsError)
@@ -90,17 +103,11 @@
             var internalConfigRepo = builder.ApplicationServices.GetService<IInternalConfigurationRepository>();
             internalConfigRepo.AddOrReplace(internalConfig.Data);
 
-            // if configuration from file system
-            if (typeof(DiskFileConfigurationRepository) == fileConfigurationRepository.GetType())
+            fileConfig.OnChange(async (config) =>
             {
-                // earlier user needed to add ocelot files in startup configuration stuff, asp.net will map it to this
-                var fileConfig = builder.ApplicationServices.GetService<IOptionsMonitor<FileConfiguration>>();
-                fileConfig.OnChange(async (config) =>
-                {
-                    var newInternalConfig = await internalConfigCreator.Create(config);
-                    internalConfigRepo.AddOrReplace(newInternalConfig.Data);
-                });
-            }
+                var newInternalConfig = await internalConfigCreator.Create(config);
+                internalConfigRepo.AddOrReplace(newInternalConfig.Data);
+            });
 
             var adminPath = builder.ApplicationServices.GetService<IAdministrationPath>();
 
@@ -117,7 +124,7 @@
                 //We have to make sure the file config is set for the ocelot.env.json and ocelot.json so that if we pull it from the
                 //admin api it works...boy this is getting a spit spags boll.
                 var fileConfigSetter = builder.ApplicationServices.GetService<IFileConfigurationSetter>();
-                await SetFileConfig(fileConfigSetter, fileConfiguration.Data);
+                await SetFileConfig(fileConfigSetter, fileConfiguration);
             }
 
             return GetOcelotConfigAndReturn(internalConfigRepo);
